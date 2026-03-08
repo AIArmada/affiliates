@@ -1,0 +1,368 @@
+<?php
+
+declare(strict_types=1);
+
+namespace AIArmada\Affiliates\Models;
+
+use AIArmada\Affiliates\Enums\CommissionType;
+use AIArmada\Affiliates\Events\AffiliateActivated;
+use AIArmada\Affiliates\Events\AffiliateCreated;
+use AIArmada\Affiliates\States\Active;
+use AIArmada\Affiliates\States\AffiliateStatus;
+use AIArmada\CommerceSupport\Support\OwnerContext;
+use AIArmada\CommerceSupport\Traits\HasOwner;
+use AIArmada\CommerceSupport\Traits\HasOwnerScopeConfig;
+use Illuminate\Database\Eloquent\Builder;
+use Illuminate\Database\Eloquent\Casts\Attribute;
+use Illuminate\Database\Eloquent\Concerns\HasUuids;
+use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\Relations\BelongsToMany;
+use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Database\Eloquent\Relations\HasOne;
+use Illuminate\Database\Eloquent\Relations\MorphMany;
+use Spatie\ModelStates\HasStates;
+
+/**
+ * @property string $id
+ * @property string $code
+ * @property string $name
+ * @property string|null $description
+ * @property AffiliateStatus $status
+ * @property CommissionType $commission_type
+ * @property int $commission_rate
+ * @property string $currency
+ * @property string|null $parent_affiliate_id
+ * @property string|null $rank_id
+ * @property int $network_depth
+ * @property int $direct_downline_count
+ * @property int $total_downline_count
+ * @property string|null $default_voucher_code
+ * @property string|null $contact_email
+ * @property string|null $website_url
+ * @property string|null $payout_terms
+ * @property string|null $tracking_domain
+ * @property string|null $owner_type
+ * @property string|null $owner_id
+ * @property array<string, mixed>|null $metadata
+ * @property \Carbon\CarbonInterface|null $activated_at
+ * @property \Carbon\CarbonInterface|null $created_at
+ * @property \Carbon\CarbonInterface|null $updated_at
+ * @property-read string|null $email Alias for contact_email
+ * @property-read int $commission_rate_basis_points Alias for commission_rate
+ * @property-read Affiliate|null $parent
+ * @property-read AffiliateRank|null $rank
+ * @property-read \Illuminate\Database\Eloquent\Collection<int, Affiliate> $children
+ * @property-read \Illuminate\Database\Eloquent\Collection<int, AffiliateAttribution> $attributions
+ * @property-read \Illuminate\Database\Eloquent\Collection<int, AffiliateConversion> $conversions
+ * @property-read \Illuminate\Database\Eloquent\Collection<int, AffiliateFraudSignal> $fraudSignals
+ * @property-read \Illuminate\Database\Eloquent\Collection<int, AffiliateDailyStat> $dailyStats
+ * @property-read AffiliateBalance|null $balance
+ * @property-read \Illuminate\Database\Eloquent\Collection<int, AffiliatePayoutMethod> $payoutMethods
+ * @property-read \Illuminate\Database\Eloquent\Collection<int, AffiliatePayoutHold> $payoutHolds
+ * @property-read \Illuminate\Database\Eloquent\Collection<int, AffiliatePayout> $payouts
+ * @property-read \Illuminate\Database\Eloquent\Collection<int, AffiliateLink> $links
+ * @property-read \Illuminate\Database\Eloquent\Collection<int, AffiliateProgram> $programs
+ * @property-read \Illuminate\Database\Eloquent\Collection<int, \AIArmada\Vouchers\Models\Voucher> $vouchers
+ * @property-read Model|null $owner
+ */
+class Affiliate extends Model
+{
+    use HasOwner {
+        scopeForOwner as baseScopeForOwner;
+    }
+    use HasOwnerScopeConfig;
+    use HasStates;
+    use HasUuids;
+
+    protected static string $ownerScopeConfigKey = 'affiliates.owner';
+
+    protected $fillable = [
+        'code',
+        'name',
+        'description',
+        'status',
+        'commission_type',
+        'commission_rate',
+        'currency',
+        'parent_affiliate_id',
+        'rank_id',
+        'network_depth',
+        'direct_downline_count',
+        'total_downline_count',
+        'default_voucher_code',
+        'contact_email',
+        'website_url',
+        'payout_terms',
+        'tracking_domain',
+        'metadata',
+        'owner_type',
+        'owner_id',
+        'activated_at',
+    ];
+
+    public function getTable(): string
+    {
+        return config('affiliates.database.tables.affiliates', parent::getTable());
+    }
+
+    /**
+     * @return HasMany<AffiliateAttribution, $this>
+     */
+    public function attributions(): HasMany
+    {
+        return $this->hasMany(AffiliateAttribution::class);
+    }
+
+    /**
+     * @return HasMany<AffiliateConversion, $this>
+     */
+    public function conversions(): HasMany
+    {
+        return $this->hasMany(AffiliateConversion::class);
+    }
+
+    /**
+     * @return MorphMany<AffiliatePayout, $this>
+     */
+    public function payouts(): MorphMany
+    {
+        return $this->morphMany(AffiliatePayout::class, 'payee');
+    }
+
+    /**
+     * @return HasMany<AffiliateLink, $this>
+     */
+    public function links(): HasMany
+    {
+        return $this->hasMany(AffiliateLink::class);
+    }
+
+    /**
+     * @return BelongsToMany<AffiliateProgram, $this>
+     */
+    public function programs(): BelongsToMany
+    {
+        return $this->belongsToMany(
+            AffiliateProgram::class,
+            config('affiliates.database.tables.program_memberships', 'affiliate_program_memberships'),
+            'affiliate_id',
+            'program_id'
+        );
+    }
+
+    /**
+     * @return BelongsTo<self, $this>
+     */
+    public function parent(): BelongsTo
+    {
+        return $this->belongsTo(self::class, 'parent_affiliate_id');
+    }
+
+    /**
+     * @return HasMany<self, $this>
+     */
+    public function children(): HasMany
+    {
+        return $this->hasMany(self::class, 'parent_affiliate_id');
+    }
+
+    /**
+     * @return BelongsTo<AffiliateRank, $this>
+     */
+    public function rank(): BelongsTo
+    {
+        return $this->belongsTo(AffiliateRank::class, 'rank_id');
+    }
+
+    /**
+     * @return HasMany<AffiliateFraudSignal, $this>
+     */
+    public function fraudSignals(): HasMany
+    {
+        return $this->hasMany(AffiliateFraudSignal::class);
+    }
+
+    /**
+     * @return HasMany<AffiliateDailyStat, $this>
+     */
+    public function dailyStats(): HasMany
+    {
+        return $this->hasMany(AffiliateDailyStat::class);
+    }
+
+    /**
+     * @return HasOne<AffiliateBalance, $this>
+     */
+    public function balance(): HasOne
+    {
+        return $this->hasOne(AffiliateBalance::class);
+    }
+
+    /**
+     * @return HasMany<AffiliatePayoutMethod, $this>
+     */
+    public function payoutMethods(): HasMany
+    {
+        return $this->hasMany(AffiliatePayoutMethod::class);
+    }
+
+    /**
+     * @return HasMany<AffiliatePayoutHold, $this>
+     */
+    public function payoutHolds(): HasMany
+    {
+        return $this->hasMany(AffiliatePayoutHold::class);
+    }
+
+    /**
+     * Get all vouchers linked to this affiliate (when aiarmada/vouchers is installed).
+     *
+     * @return HasMany<\AIArmada\Vouchers\Models\Voucher, $this>|HasMany<Model, $this>
+     */
+    public function vouchers(): HasMany
+    {
+        if (\class_exists(\AIArmada\Vouchers\Models\Voucher::class)) {
+            return $this->hasMany(\AIArmada\Vouchers\Models\Voucher::class, 'affiliate_id');
+        }
+
+        // Fallback to prevent errors when vouchers package not installed
+        return $this->hasMany(Model::class, 'affiliate_id');
+    }
+
+    public function hasActivePayoutHold(): bool
+    {
+        return $this->payoutHolds()
+            ->whereNull('released_at')
+            ->where(function ($query): void {
+                $query->whereNull('expires_at')
+                    ->orWhere('expires_at', '>', now());
+            })
+            ->exists();
+    }
+
+    public function canRequestPayout(): bool
+    {
+        if (! $this->isActive()) {
+            return false;
+        }
+
+        if ($this->hasActivePayoutHold()) {
+            return false;
+        }
+
+        $balance = $this->balance;
+        if (! $balance) {
+            return false;
+        }
+
+        return $balance->canRequestPayout();
+    }
+
+    public function isActive(): bool
+    {
+        return $this->status instanceof Active;
+    }
+
+    public function scopeForOwner(Builder $query, Model | string | null $owner = OwnerContext::CURRENT, bool $includeGlobal = false): Builder
+    {
+        if (! config('affiliates.owner.enabled', false)) {
+            return $query;
+        }
+
+        $includeGlobal = $includeGlobal && (bool) config('affiliates.owner.include_global', false);
+
+        /** @var Builder<static> $scoped */
+        $scoped = $this->baseScopeForOwner($query, $owner, $includeGlobal);
+
+        return $scoped;
+    }
+
+    protected static function booted(): void
+    {
+        self::creating(function (self $affiliate): void {
+            if (! config('affiliates.owner.enabled', false)) {
+                return;
+            }
+
+            if ($affiliate->owner_id !== null) {
+                return;
+            }
+
+            if (! config('affiliates.owner.auto_assign_on_create', true)) {
+                return;
+            }
+
+            $owner = \AIArmada\CommerceSupport\Support\OwnerContext::resolve();
+
+            if ($owner) {
+                $affiliate->owner_type = $owner->getMorphClass();
+                $affiliate->owner_id = $owner->getKey();
+            }
+        });
+
+        self::created(function (self $affiliate): void {
+            AffiliateCreated::dispatch($affiliate);
+        });
+
+        self::updated(function (self $affiliate): void {
+            // Fire activated event when status changes to Active
+            if ($affiliate->wasChanged('status') && $affiliate->status instanceof Active) {
+                AffiliateActivated::dispatch($affiliate);
+            }
+        });
+
+        self::deleting(function (self $affiliate): void {
+            $affiliate->attributions()->delete();
+            $affiliate->conversions()->delete();
+            $affiliate->fraudSignals()->delete();
+            $affiliate->dailyStats()->delete();
+            $affiliate->links()->delete();
+            $affiliate->payoutMethods()->delete();
+            $affiliate->payoutHolds()->delete();
+            $affiliate->payouts()->delete();
+            $affiliate->balance()->delete();
+            $affiliate->children()->update(['parent_affiliate_id' => null]);
+        });
+    }
+
+    /**
+     * Alias for contact_email.
+     *
+     * @return Attribute<string|null, never>
+     */
+    protected function email(): Attribute
+    {
+        return Attribute::make(
+            get: fn () => $this->contact_email,
+        );
+    }
+
+    /**
+     * Alias for commission_rate.
+     *
+     * @return Attribute<int, never>
+     */
+    protected function commissionRateBasisPoints(): Attribute
+    {
+        return Attribute::make(
+            get: fn () => $this->commission_rate,
+        );
+    }
+
+    /**
+     * @return array<string, string>
+     */
+    protected function casts(): array
+    {
+        return [
+            'status' => AffiliateStatus::class,
+            'commission_type' => CommissionType::class,
+            'network_depth' => 'integer',
+            'direct_downline_count' => 'integer',
+            'total_downline_count' => 'integer',
+            'metadata' => 'array',
+            'activated_at' => 'datetime',
+        ];
+    }
+}
