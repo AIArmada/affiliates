@@ -10,6 +10,12 @@ use AIArmada\CommerceSupport\Support\OwnerContext;
 use AIArmada\Orders\Events\CommissionAttributionRequired;
 use InvalidArgumentException;
 
+/**
+ * Optional orders integration for affiliates.
+ *
+ * The affiliates core model is reference-neutral. This listener adapts an
+ * orders event into the compatibility payload expected by recordConversion().
+ */
 final readonly class RecordCommissionForOrder
 {
     public function __construct(
@@ -21,6 +27,7 @@ final readonly class RecordCommissionForOrder
     {
         $order = $event->order;
         $metadata = $order->metadata ?? [];
+        $reference = $order->order_number ?? $order->id;
 
         if (! is_array($metadata)) {
             $metadata = [];
@@ -40,7 +47,7 @@ final readonly class RecordCommissionForOrder
             $owner = null;
         }
 
-        OwnerContext::withOwner($owner, function () use ($cartId, $order): void {
+        OwnerContext::withOwner($owner, function () use ($cartId, $order, $reference): void {
             $cart = $this->cartManager->getById($cartId);
 
             if ($cart === null || ! $cart->exists()) {
@@ -48,7 +55,9 @@ final readonly class RecordCommissionForOrder
             }
 
             $this->affiliateService->recordConversion($cart, [
-                'order_reference' => $order->order_number ?? $order->id,
+                'external_reference' => $reference,
+                'order_reference' => $reference,
+                'conversion_type' => 'purchase',
                 'subtotal' => $order->subtotal,
                 'total' => $order->grand_total,
                 'commission_currency' => $order->currency,

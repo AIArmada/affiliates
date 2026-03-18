@@ -6,6 +6,7 @@ namespace AIArmada\Affiliates\Models;
 
 use AIArmada\CommerceSupport\Traits\HasOwner;
 use AIArmada\CommerceSupport\Traits\HasOwnerScopeConfig;
+use Carbon\CarbonInterface;
 use Illuminate\Database\Eloquent\Concerns\HasUuids;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
@@ -15,6 +16,10 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
  * @property string $affiliate_attribution_id
  * @property string $affiliate_id
  * @property string $affiliate_code
+ * @property string|null $subject_type
+ * @property string|null $subject_identifier
+ * @property string|null $subject_instance
+ * @property string|null $subject_title_snapshot
  * @property string|null $source
  * @property string|null $medium
  * @property string|null $campaign
@@ -25,9 +30,9 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
  * @property string|null $ip_address
  * @property string|null $user_agent
  * @property array<string, mixed>|null $metadata
- * @property \Carbon\CarbonInterface|null $touched_at
- * @property \Carbon\CarbonInterface|null $created_at
- * @property \Carbon\CarbonInterface|null $updated_at
+ * @property CarbonInterface|null $touched_at
+ * @property CarbonInterface|null $created_at
+ * @property CarbonInterface|null $updated_at
  * @property-read AffiliateAttribution $attribution
  * @property-read Affiliate $affiliate
  */
@@ -43,6 +48,10 @@ class AffiliateTouchpoint extends Model
         'affiliate_attribution_id',
         'affiliate_id',
         'affiliate_code',
+        'subject_type',
+        'subject_identifier',
+        'subject_instance',
+        'subject_title_snapshot',
         'source',
         'medium',
         'campaign',
