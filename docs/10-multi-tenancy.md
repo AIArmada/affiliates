@@ -11,7 +11,7 @@ The affiliates package fully supports multi-tenant architectures using the `comm
 ```php
 // config/affiliates.php
 'owner' => [
-    'enabled' => env('AFFILIATES_OWNER_ENABLED', true),
+    'enabled' => env('AFFILIATES_OWNER_ENABLED', false),
     'include_global' => env('AFFILIATES_OWNER_INCLUDE_GLOBAL', false),
     'auto_assign_on_create' => env('AFFILIATES_OWNER_AUTO_ASSIGN', true),
 ],
@@ -223,7 +223,7 @@ public static function getEloquentQuery(): Builder
 
 ## Jobs and Commands
 
-For background jobs and commands, explicitly set the owner context:
+For background jobs and commands, enter the owner context with `OwnerContext::withOwner(...)`:
 
 ```php
 use AIArmada\CommerceSupport\Support\OwnerContext;
@@ -237,14 +237,30 @@ class ProcessAffiliatePayouts implements ShouldQueue
 
     public function handle(): void
     {
-        // Set owner context for this job
         $owner = $this->ownerType::find($this->ownerId);
-        OwnerContext::set($owner);
 
-        // Now all queries are properly scoped
-        $affiliates = Affiliate::query()->get();
+        OwnerContext::withOwner($owner, function (): void {
+            $affiliates = Affiliate::query()->get();
+
+            // Process payouts...
+        });
     }
 }
+```
+
+`OwnerContext::setForRequest()` is reserved for HTTP middleware/framework integrations during an active request. Non-HTTP surfaces should use `OwnerContext::withOwner(...)` so owner overrides are always restored safely.
+
+When reconstructing owner context from raw rows or payloads, prefer the shared tuple helpers and fail closed on malformed values:
+
+```php
+use AIArmada\CommerceSupport\Support\OwnerContext;
+use AIArmada\CommerceSupport\Support\OwnerTuple\OwnerTupleParser;
+
+$parsed = OwnerTupleParser::fromTypeAndId($payload['owner_type'] ?? null, $payload['owner_id'] ?? null);
+
+OwnerContext::withOwner($parsed->toOwnerModel(), function (): void {
+    Affiliate::query()->get();
+});
 ```
 
 ## Testing Multi-Tenancy
