@@ -1,5 +1,7 @@
 # Affiliates Vision Progress
 
+> **Archived vision document:** this progress file reflects a 2025 implementation plan and audit snapshot. Prefer the current package docs under `packages/affiliates/docs/` and `packages/filament-affiliates/docs/` for present behavior.
+
 > **Package:** `aiarmada/affiliates` + `aiarmada/filament-affiliates`  
 > **Last Verified:** December 18, 2025 (100% complete)  
 > **Last Audit:** December 18, 2025 (95% → 100% after fixes)
@@ -26,7 +28,7 @@
 **Full-Spectrum Audit: COMPLETED (December 18, 2025)**
 - **Grade:** A- (Excellent with Minor Issues)
 - **Production Readiness:** 100% (after fixes)
-- See `docs/vision/AUDIT.md` for complete audit report
+- See `AUDIT.md` for the archived audit report
 
 ---
 

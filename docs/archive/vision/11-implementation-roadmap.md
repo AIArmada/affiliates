@@ -372,4 +372,4 @@ Phase 1 (Core) ─────► Phase 2 (Network)
 ## Navigation
 
 **Previous:** [10-filament-enhancements.md](10-filament-enhancements.md)  
-**Index:** [PROGRESS.md](../PROGRESS.md)
+**Index:** [PROGRESS.md](PROGRESS.md)

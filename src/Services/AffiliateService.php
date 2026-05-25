@@ -22,16 +22,19 @@ use AIArmada\Affiliates\States\PendingConversion;
 use AIArmada\Affiliates\Support\Links\AffiliateLinkGenerator;
 use AIArmada\Affiliates\Support\Webhooks\WebhookDispatcher;
 use AIArmada\Cart\Cart;
+use AIArmada\CommerceSupport\Support\ConnectionDriver;
 use AIArmada\CommerceSupport\Support\OwnerContext;
 use AIArmada\CommerceSupport\Support\OwnerQuery;
 use AIArmada\CommerceSupport\Support\OwnerWriteGuard;
 use Illuminate\Cache\Repository as CacheRepository;
+use Illuminate\Contracts\Encryption\DecryptException;
 use Illuminate\Contracts\Events\Dispatcher;
 use Illuminate\Database\Connection;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Arr;
 use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\Crypt;
 use Illuminate\Support\Str;
 use Stringable;
 
@@ -65,7 +68,7 @@ final class AffiliateService
         $query = $this->query();
         /** @var Connection $connection */
         $connection = $query->getConnection();
-        $driver = $connection->getDriverName();
+        $driver = ConnectionDriver::name($connection);
 
         /** @var Affiliate|null */
         return $query
@@ -84,7 +87,7 @@ final class AffiliateService
 
         /** @var Connection $connection */
         $connection = $query->getConnection();
-        $driver = $connection->getDriverName();
+        $driver = ConnectionDriver::name($connection);
 
         /** @var Affiliate|null */
         return $query
@@ -102,7 +105,7 @@ final class AffiliateService
         $query = $this->query();
         /** @var Connection $connection */
         $connection = $query->getConnection();
-        $driver = $connection->getDriverName();
+        $driver = ConnectionDriver::name($connection);
 
         /** @var Affiliate|null */
         return $query
@@ -112,6 +115,18 @@ final class AffiliateService
                 fn ($q) => $q->whereRaw('LOWER(default_voucher_code) = ?', [mb_strtolower($normalized)])
             )
             ->first();
+    }
+
+    public function findAffiliateByCookie(string $cookieValue): ?Affiliate
+    {
+        $attribution = $this->findAttributionByCookie($cookieValue);
+        $affiliate = $attribution?->affiliate;
+
+        if (! $affiliate || ! $affiliate->isActive()) {
+            return null;
+        }
+
+        return $affiliate;
     }
 
     /**
@@ -607,19 +622,44 @@ final class AffiliateService
 
     private function findAttributionByCookie(?string $cookieValue): ?AffiliateAttribution
     {
-        if (! $cookieValue) {
+        $cookieCandidates = $this->resolveCookieCandidates($cookieValue);
+
+        if ($cookieCandidates === []) {
             return null;
         }
 
         $query = AffiliateAttribution::query()
             ->with('affiliate')
-            ->where('cookie_value', $cookieValue)
+            ->whereIn('cookie_value', $cookieCandidates)
             ->active()
             ->latest('last_cookie_seen_at');
 
         $this->applyOwnerScope($query);
 
         return $query->first();
+    }
+
+    /**
+     * @return array<int, string>
+     */
+    private function resolveCookieCandidates(?string $cookieValue): array
+    {
+        if (! is_string($cookieValue) || $cookieValue === '') {
+            return [];
+        }
+
+        $candidates = [$cookieValue];
+
+        try {
+            $decryptedCookieValue = Crypt::decryptString($cookieValue);
+
+            if ($decryptedCookieValue !== '') {
+                $candidates[] = $decryptedCookieValue;
+            }
+        } catch (DecryptException) {
+        }
+
+        return array_values(array_unique($candidates));
     }
 
     /**
