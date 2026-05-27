@@ -42,7 +42,7 @@ return [
     */
     'database' => [
         'table_prefix' => $tablePrefix,
-        'json_column_type' => env('AFFILIATES_JSON_COLUMN_TYPE', env('COMMERCE_JSON_COLUMN_TYPE', 'json')),
+        'json_column_type' => env('AFFILIATES_JSON_COLUMN_TYPE', env('COMMERCE_JSON_COLUMN_TYPE', 'jsonb')),
         'tables' => $tables,
     ],
 
@@ -58,7 +58,7 @@ return [
     */
 
     'currency' => [
-        'default' => env('AFFILIATES_DEFAULT_CURRENCY', 'USD'),
+        'default' => env('AFFILIATES_DEFAULT_CURRENCY', 'MYR'),
         'percentage_scale' => env('AFFILIATES_PERCENTAGE_SCALE', 100), // basis points (100 = 1%)
     ],
 
@@ -207,7 +207,7 @@ return [
     ],
 
     'payouts' => [
-        'currency' => env('AFFILIATES_PAYOUT_CURRENCY', env('AFFILIATES_DEFAULT_CURRENCY', 'USD')),
+        'currency' => env('AFFILIATES_PAYOUT_CURRENCY', env('AFFILIATES_DEFAULT_CURRENCY', 'MYR')),
         'reference_prefix' => env('AFFILIATES_PAYOUT_REF_PREFIX', 'PO-'),
         'minimum_amount' => env('AFFILIATES_PAYOUT_MINIMUM_AMOUNT', 5000),
         'maturity_days' => env('AFFILIATES_PAYOUT_MATURITY_DAYS', 30),
