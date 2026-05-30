@@ -44,6 +44,8 @@ use OwenIt\Auditing\Contracts\Auditable;
  * @property string|null $owner_type
  * @property string|null $owner_id
  * @property-read Collection<int, AffiliateProgramTier> $tiers
+ * @property-read Collection<int, AffiliateCommissionRule> $commissionRules
+ * @property-read Collection<int, AffiliateCommissionPromotion> $commissionPromotions
  * @property-read Collection<int, Affiliate> $affiliates
  * @property-read Collection<int, AffiliateProgramCreative> $creatives
  * @property-read Model|null $owner
@@ -59,6 +61,10 @@ class AffiliateProgram extends Model implements Auditable
     use LogsCommerceActivity;
 
     protected static string $ownerScopeConfigKey = 'affiliates.owner';
+
+    protected $attributes = [
+        'is_public' => true,
+    ];
 
     protected $fillable = [
         'name',
@@ -103,6 +109,22 @@ class AffiliateProgram extends Model implements Auditable
     public function tiers(): HasMany
     {
         return $this->hasMany(AffiliateProgramTier::class, 'program_id')->orderBy('level');
+    }
+
+    /**
+     * @return HasMany<AffiliateCommissionRule, self>
+     */
+    public function commissionRules(): HasMany
+    {
+        return $this->hasMany(AffiliateCommissionRule::class, 'program_id')->orderByDesc('priority');
+    }
+
+    /**
+     * @return HasMany<AffiliateCommissionPromotion, self>
+     */
+    public function commissionPromotions(): HasMany
+    {
+        return $this->hasMany(AffiliateCommissionPromotion::class, 'program_id')->orderByDesc('created_at');
     }
 
     /**
@@ -158,7 +180,7 @@ class AffiliateProgram extends Model implements Auditable
 
     public function canJoin(Affiliate $affiliate): bool
     {
-        if (! $this->isOpen() && ! $this->requires_approval) {
+        if (! $this->isOpen()) {
             return false;
         }
 
@@ -239,6 +261,8 @@ class AffiliateProgram extends Model implements Auditable
 
         static::deleting(function (self $program): void {
             $program->tiers()->delete();
+            $program->commissionRules()->delete();
+            $program->commissionPromotions()->delete();
             $program->memberships()->delete();
             $program->creatives()->delete();
         });
