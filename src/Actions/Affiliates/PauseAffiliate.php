@@ -5,23 +5,17 @@ declare(strict_types=1);
 namespace AIArmada\Affiliates\Actions\Affiliates;
 
 use AIArmada\Affiliates\Models\Affiliate;
-use AIArmada\Affiliates\States\Disabled;
+use AIArmada\Affiliates\States\Paused;
 use Lorisleiva\Actions\Concerns\AsAction;
 
-/**
- * Reject a pending affiliate.
- */
-final class RejectAffiliate
+final class PauseAffiliate
 {
     use AsAction;
 
-    /**
-     * Reject a pending affiliate and set them to disabled status.
-     */
     public function handle(Affiliate $affiliate): Affiliate
     {
-        $affiliate->status = new Disabled($affiliate);
-        $affiliate->deactivated_at = now();
+        $affiliate->status = new Paused($affiliate);
+        $affiliate->paused_at = now();
         $affiliate->save();
 
         return $affiliate;
