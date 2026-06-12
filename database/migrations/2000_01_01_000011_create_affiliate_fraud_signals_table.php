@@ -29,6 +29,8 @@ return new class extends Migration
             $table->timestampTz('detected_at');
             $table->timestampTz('reviewed_at')->nullable();
             $table->foreignUuid('reviewed_by')->nullable();
+            $table->timestampTz('dismissed_at')->nullable();
+            $table->timestampTz('confirmed_at')->nullable();
             $table->timestampsTz();
 
             $table->index(['affiliate_id', 'detected_at']);

@@ -18,10 +18,12 @@ return new class extends Migration
             $table->string('slug')->unique();
             $table->text('description')->nullable();
             $table->string('status')->default('draft');
+            $table->string('visibility', 32)->default('private');
             $table->timestampTz('starts_at')->nullable();
             $table->timestampTz('ends_at')->nullable();
+            $table->timestampTz('paused_at')->nullable();
+            $table->timestampTz('archived_at')->nullable();
             $table->boolean('requires_approval')->default(true);
-            $table->boolean('is_public')->default(true);
             $table->integer('default_commission_rate_basis_points')->default(1000);
             $table->string('commission_type')->default('percentage');
             $table->integer('cookie_lifetime_days')->default(30);
@@ -36,7 +38,6 @@ return new class extends Migration
             $table->timestampsTz();
 
             $table->index('status');
-            $table->index(['is_public', 'status']);
         });
     }
 

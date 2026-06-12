@@ -22,6 +22,8 @@ return new class extends Migration
             $table->timestampTz('approved_at')->nullable();
             $table->timestampTz('expires_at')->nullable();
             $table->foreignUuid('approved_by')->nullable();
+            $table->timestampTz('rejected_at')->nullable();
+            $table->timestampTz('suspended_at')->nullable();
 
             $jsonType = config('affiliates.database.json_column_type', commerce_json_column_type('affiliates', 'jsonb'));
             $table->addColumn($jsonType, 'custom_terms')->nullable();

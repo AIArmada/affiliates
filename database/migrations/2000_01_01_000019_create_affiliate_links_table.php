@@ -32,7 +32,7 @@ return new class extends Migration
             $table->{$jsonType}('subject_metadata')->nullable();
             $table->unsignedBigInteger('clicks')->default(0);
             $table->unsignedBigInteger('conversions')->default(0);
-            $table->boolean('is_active')->default(true);
+            $table->timestampTz('deactivated_at')->nullable();
             $table->timestampsTz();
 
             $table->index('affiliate_id');

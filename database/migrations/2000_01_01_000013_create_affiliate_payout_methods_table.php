@@ -17,7 +17,6 @@ return new class extends Migration
             $table->foreignUuid('affiliate_id');
             $table->string('type');
             $table->text('details');
-            $table->boolean('is_verified')->default(false);
             $table->boolean('is_default')->default(false);
             $table->timestampTz('verified_at')->nullable();
             $table->timestampsTz();
