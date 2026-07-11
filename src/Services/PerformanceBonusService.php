@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace AIArmada\Affiliates\Services;
 
+use AIArmada\Affiliates\Actions\Conversions\ApplyConversionAccounting;
 use AIArmada\Affiliates\Models\Affiliate;
 use AIArmada\Affiliates\Models\AffiliateBalance;
 use AIArmada\Affiliates\Models\AffiliateConversion;
@@ -62,49 +63,66 @@ final class PerformanceBonusService
 
     public function awardBonuses(array $bonuses): int
     {
-        $awarded = 0;
+        return (int) DB::transaction(function () use ($bonuses): int {
+            $awarded = 0;
 
-        foreach ($bonuses as $bonus) {
-            $affiliate = Affiliate::find($bonus['affiliate_id']);
+            foreach ($bonuses as $bonus) {
+                $affiliate = Affiliate::query()->forOwner()->find($bonus['affiliate_id']);
 
-            if (! $affiliate || ! $affiliate->status->equals(Active::class)) {
-                continue;
+                if (! $affiliate || ! $affiliate->status->equals(Active::class)) {
+                    continue;
+                }
+
+                $period = (string) ($bonus['metrics']['period'] ?? now()->format('Y-m'));
+                $performanceBonusKey = implode(':', [
+                    'performance-bonus',
+                    $affiliate->id,
+                    $bonus['bonus_type'],
+                    $period,
+                ]);
+
+                AffiliateBalance::firstOrCreate(
+                    [
+                        'affiliate_id' => $affiliate->id,
+                        'currency' => $affiliate->currency ?? config('affiliates.currency.default', 'USD'),
+                    ],
+                    [
+                        'holding_minor' => 0,
+                        'available_minor' => 0,
+                        'lifetime_earnings_minor' => 0,
+                        'minimum_payout_minor' => config('affiliates.payouts.minimum_amount', 5000),
+                    ]
+                );
+
+                $conversion = AffiliateConversion::firstOrCreate(
+                    ['performance_bonus_key' => $performanceBonusKey],
+                    [
+                        'affiliate_id' => $affiliate->id,
+                        'affiliate_code' => $affiliate->code,
+                        'external_reference' => 'BONUS-' . $period . '-' . mb_strtoupper(mb_substr(md5($performanceBonusKey), 0, 8)),
+                        'performance_bonus_key' => $performanceBonusKey,
+                        'subtotal_minor' => 0,
+                        'commission_minor' => $bonus['amount_minor'],
+                        'status' => ApprovedConversion::class,
+                        'occurred_at' => now(),
+                        'metadata' => [
+                            'type' => 'performance_bonus',
+                            'bonus_type' => $bonus['bonus_type'],
+                            'reason' => $bonus['reason'],
+                            'metrics' => $bonus['metrics'],
+                        ],
+                    ],
+                );
+
+                if ($conversion->wasRecentlyCreated) {
+                    app(ApplyConversionAccounting::class)->handle($conversion);
+                }
+
+                $awarded += (int) $conversion->wasRecentlyCreated;
             }
 
-            AffiliateBalance::firstOrCreate(
-                [
-                    'affiliate_id' => $affiliate->id,
-                    'currency' => $affiliate->currency ?? config('affiliates.currency.default', 'USD'),
-                ],
-                [
-                    'holding_minor' => 0,
-                    'available_minor' => 0,
-                    'lifetime_earnings_minor' => 0,
-                    'minimum_payout_minor' => config('affiliates.payouts.minimum_amount', 5000),
-                ]
-            );
-
-            AffiliateConversion::create([
-                'affiliate_id' => $affiliate->id,
-                'affiliate_code' => $affiliate->code,
-                'order_reference' => 'BONUS-' . now()->format('Ymd') . '-' . mb_strtoupper(mb_substr(md5($bonus['affiliate_id'] . $bonus['bonus_type']), 0, 8)),
-                'subtotal_minor' => 0,
-                'total_minor' => 0,
-                'commission_minor' => $bonus['amount_minor'],
-                'status' => ApprovedConversion::class,
-                'occurred_at' => now(),
-                'metadata' => [
-                    'type' => 'performance_bonus',
-                    'bonus_type' => $bonus['bonus_type'],
-                    'reason' => $bonus['reason'],
-                    'metrics' => $bonus['metrics'],
-                ],
-            ]);
-
-            $awarded++;
-        }
-
-        return $awarded;
+            return $awarded;
+        });
     }
 
     public function getLeaderboard(
@@ -117,7 +135,7 @@ final class PerformanceBonusService
 
         $conversionsTable = (new AffiliateConversion)->getTable();
         $affiliatesTable = (new Affiliate)->getTable();
-        $revenueExpression = "COALESCE(NULLIF({$conversionsTable}.value_minor, 0), {$conversionsTable}.total_minor, 0)";
+        $revenueExpression = "COALESCE({$conversionsTable}.value_minor, 0)";
 
         $query = DB::table($conversionsTable)
             ->join($affiliatesTable, "{$conversionsTable}.affiliate_id", '=', "{$affiliatesTable}.id")
@@ -163,6 +181,11 @@ final class PerformanceBonusService
         }
 
         $owner = OwnerContext::resolve();
+        OwnerContext::assertResolvedOrExplicitGlobal(
+            $owner,
+            'Performance bonus queries require an owner context or explicit global context.',
+        );
+
         $includeGlobal = (bool) config('affiliates.owner.include_global', false);
 
         OwnerQuery::applyToQueryBuilder($query, $owner, $includeGlobal, $ownerTypeColumn, $ownerIdColumn);

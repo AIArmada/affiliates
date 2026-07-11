@@ -33,6 +33,7 @@ final class RecordAffiliateConversion
         private readonly WebhookDispatcher $webhooks,
         private readonly AttributionModel $attributionModel,
         private readonly AllocateUplineCommissions $allocateUpline,
+        private readonly ApplyConversionAccounting $accounting,
     ) {}
 
     public function handle(Cart $cart, array $payload = []): ?AffiliateConversionData
@@ -93,6 +94,8 @@ final class RecordAffiliateConversion
                 $conversionMetadata['upline_levels'] = $metadata['upline_levels'];
             }
 
+            $wasCreated = false;
+
             $conversion = AffiliateConversion::create([
                 'affiliate_id' => $beneficiary?->getKey() ?? $affiliateId,
                 'affiliate_code' => $beneficiary?->code ?? $affiliate->code,
@@ -101,15 +104,11 @@ final class RecordAffiliateConversion
                 'subject_identifier' => $attribution?->subject_identifier ?? $cart->getIdentifier(),
                 'subject_instance' => $attribution?->subject_instance ?? $cart->instance(),
                 'subject_title_snapshot' => $payload['subject_title_snapshot'] ?? $attribution?->subject_title_snapshot ?? ($metadata['subject_title_snapshot'] ?? null),
-                'cart_identifier' => $cart->getIdentifier(),
-                'cart_instance' => $cart->instance(),
                 'voucher_code' => $metadata['voucher_code'] ?? null,
                 'external_reference' => $payload['external_reference'] ?? $payload['order_reference'] ?? null,
-                'order_reference' => $payload['order_reference'] ?? null,
                 'conversion_type' => $payload['conversion_type'] ?? 'purchase',
                 'subtotal_minor' => $subtotalMinor ?? 0,
                 'value_minor' => $portionRevenue,
-                'total_minor' => $portionRevenue,
                 'commission_minor' => $portionCommission,
                 'commission_currency' => $payload['commission_currency'] ?? $affiliate->currency,
                 'status' => $autoApprove ? ApprovedConversion::class : $statusEnum::class,
@@ -120,6 +119,8 @@ final class RecordAffiliateConversion
                 'occurred_at' => $payload['occurred_at'] ?? now(),
                 'approved_at' => $autoApprove ? now() : null,
             ]);
+
+            $this->accounting->handle($conversion);
 
             $conversionData = AffiliateConversionData::fromModel($conversion);
             $conversions[] = $conversionData;
