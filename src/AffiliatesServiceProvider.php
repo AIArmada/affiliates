@@ -87,6 +87,7 @@ final class AffiliatesServiceProvider extends PackageServiceProvider
             ->discoversMigrations()
             ->hasRoutes(['api', 'web'])
             ->hasCommands([
+                Console\Commands\AwardPerformanceBonusesCommand::class,
                 Console\Commands\ExportAffiliatePayoutCommand::class,
                 Console\Commands\AggregateDailyStatsCommand::class,
                 Console\Commands\ProcessRankUpgradesCommand::class,
@@ -118,6 +119,25 @@ final class AffiliatesServiceProvider extends PackageServiceProvider
 
         $this->app->singleton(VoucherIntegrationRegistrar::class);
         $this->app->singleton(AffiliateDiscountConditionProvider::class);
+
+        $this->registerSettingsMigrationPath();
+    }
+
+    private function registerSettingsMigrationPath(): void
+    {
+        $packagePath = __DIR__ . '/../database/settings';
+
+        if (! is_dir($packagePath)) {
+            return;
+        }
+
+        $paths = config('settings.migrations_paths', []);
+
+        if (! in_array($packagePath, $paths, true)) {
+            $paths[] = $packagePath;
+
+            config(['settings.migrations_paths' => $paths]);
+        }
     }
 
     public function packageBooted(): void

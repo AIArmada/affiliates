@@ -13,6 +13,7 @@ use AIArmada\Affiliates\Models\AffiliateVolumeTier;
 use AIArmada\Affiliates\States\Active;
 use AIArmada\Affiliates\States\AffiliateStatus;
 use AIArmada\Affiliates\States\ApprovedConversion;
+use AIArmada\Affiliates\Support\BonusConfig;
 use AIArmada\Affiliates\Support\RevenueVolume;
 use AIArmada\CommerceSupport\Support\CurrencyConverter;
 use AIArmada\CommerceSupport\Support\OwnerContext;
@@ -250,16 +251,37 @@ final class CommissionRuleEngine
             ->groupBy('commission_currency')
             ->get();
 
-        $periodVolume = RevenueVolume::measurableIn(
-            RevenueVolume::foldRows($volumeRows, RevenueVolume::referenceFor($affiliate)),
-            RevenueVolume::referenceFor($affiliate),
-        );
+        $reference = RevenueVolume::referenceFor($affiliate);
+        $folded = RevenueVolume::foldRows($volumeRows, $reference);
+        $volumeIn = [];
 
-        // Find applicable volume tier
+        $volumeFor = function (string $currency) use ($folded, &$volumeIn): int {
+            return $volumeIn[$currency] ??= RevenueVolume::measurableIn($folded, $currency);
+        };
+
+        // Tiers qualify in their own currency; mixed-currency tiers order by
+        // converted floor with unconvertible tiers sinking last.
         $tier = $this->volumeTiersForProgram($programId)
-            ->filter(fn (AffiliateVolumeTier $candidate): bool => $candidate->min_volume_minor <= $periodVolume
-                && ($candidate->max_volume_minor === null || $candidate->max_volume_minor >= $periodVolume))
-            ->sortByDesc('min_volume_minor')
+            ->filter(fn (AffiliateVolumeTier $candidate): bool => $candidate->containsVolume($volumeFor($candidate->currencyCode())))
+            ->sort(function (AffiliateVolumeTier $left, AffiliateVolumeTier $right) use ($reference): int {
+                $converter = app(CurrencyConverter::class);
+                $leftMin = $converter->convertMinor($left->min_volume_minor, $left->currencyCode(), $reference);
+                $rightMin = $converter->convertMinor($right->min_volume_minor, $right->currencyCode(), $reference);
+
+                if ($leftMin === null && $rightMin === null) {
+                    return 0;
+                }
+
+                if ($leftMin === null) {
+                    return 1;
+                }
+
+                if ($rightMin === null) {
+                    return -1;
+                }
+
+                return $rightMin <=> $leftMin;
+            })
             ->first();
 
         if (! $tier) {
@@ -302,16 +324,19 @@ final class CommissionRuleEngine
         bool $includeGlobal,
     ): array {
         $type = CommissionRuleType::TopPerformer;
-        $config = config('affiliates.bonuses.top_performer', []);
+        $config = BonusConfig::topPerformer();
 
         if (! (bool) ($config['enabled'] ?? true)) {
             return [];
         }
 
         $bonuses = [];
+        $thresholdCurrency = mb_strtoupper((string) ($config['min_revenue_currency'] ?? config('affiliates.currency.default', 'MYR')));
 
         foreach ($this->performanceLeaderboard($from, $to, 3, $includeGlobal) as $entry) {
-            if ($entry['total_revenue'] < ($config['min_revenue'] ?? 100000)) {
+            $revenue = app(CurrencyConverter::class)->totalMinor($entry['revenue_by_currency'], $thresholdCurrency, $to);
+
+            if ($revenue === null || $revenue < ($config['min_revenue'] ?? 100000)) {
                 continue;
             }
 
@@ -349,7 +374,7 @@ final class CommissionRuleEngine
         bool $includeGlobal,
     ): array {
         $type = CommissionRuleType::Recruitment;
-        $config = config('affiliates.bonuses.recruitment', []);
+        $config = BonusConfig::recruitment();
 
         if (! (bool) ($config['enabled'] ?? true)) {
             return [];
@@ -415,7 +440,7 @@ final class CommissionRuleEngine
         bool $includeGlobal,
     ): array {
         $type = CommissionRuleType::Consistency;
-        $config = config('affiliates.bonuses.consistency', []);
+        $config = BonusConfig::consistency();
 
         if (! (bool) ($config['enabled'] ?? true)) {
             return [];
@@ -459,7 +484,7 @@ final class CommissionRuleEngine
                 'affiliate_id' => $affiliate->id,
                 'affiliate_name' => $affiliate->name,
                 'amount_minor' => (int) ($config['bonus_amount'] ?? 5000),
-                'reason' => "Consistency Bonus - Sales in {$weeksWithSales} consecutive weeks",
+                'reason' => "Consistency Bonus - Sales in {$weeksWithSales} qualifying weeks",
                 'metrics' => [
                     'weeks_with_sales' => $weeksWithSales,
                     'period' => $from->format('Y-m'),
@@ -479,13 +504,13 @@ final class CommissionRuleEngine
         bool $includeGlobal,
     ): array {
         $type = CommissionRuleType::Growth;
-        $config = config('affiliates.bonuses.growth', []);
+        $config = BonusConfig::growth();
 
         if (! (bool) ($config['enabled'] ?? true)) {
             return [];
         }
 
-        $minimumGrowthPercentage = (float) ($config['min_growth_percent'] ?? 50);
+        $minimumGrowthPercentage = (float) ($config['min_growth_percent'] ?? 25);
         $prevFrom = $from->subMonth()->startOfMonth();
         $prevTo = $from->subMonth()->endOfMonth();
         $bonuses = [];
@@ -495,17 +520,21 @@ final class CommissionRuleEngine
             ->where('status', AffiliateStatus::normalize(Active::class))
             ->get();
 
+        $floorCurrency = mb_strtoupper((string) ($config['min_previous_revenue_currency'] ?? config('affiliates.currency.default', 'MYR')));
+
         foreach ($affiliates as $affiliate) {
             $reference = RevenueVolume::referenceFor($affiliate);
 
             $currentRevenue = RevenueVolume::measurableIn(
                 RevenueVolume::foldRows($this->revenueByCurrency($affiliate, $from, $to, $includeGlobal), $reference),
-                $reference,
+                $floorCurrency,
+                $to,
             );
 
             $previousRevenue = RevenueVolume::measurableIn(
                 RevenueVolume::foldRows($this->revenueByCurrency($affiliate, $prevFrom, $prevTo, $includeGlobal), $reference),
-                $reference,
+                $floorCurrency,
+                $prevTo,
             );
 
             if ($previousRevenue < ($config['min_previous_revenue'] ?? 50000)) {
@@ -522,7 +551,7 @@ final class CommissionRuleEngine
                 'bonus_type' => $type->value,
                 'affiliate_id' => $affiliate->id,
                 'affiliate_name' => $affiliate->name,
-                'amount_minor' => (int) ($config['bonus_amount'] ?? 7500),
+                'amount_minor' => (int) ($config['bonus_amount'] ?? 10000),
                 'reason' => 'Growth Bonus - ' . round($growthPercentage, 1) . '% growth vs previous month',
                 'metrics' => [
                     'current_revenue' => $currentRevenue,
@@ -649,7 +678,7 @@ final class CommissionRuleEngine
                 continue;
             }
 
-            $converted = app(CurrencyConverter::class)->totalMinor($entry['by_currency'], $default);
+            $converted = app(CurrencyConverter::class)->totalMinor($entry['by_currency'], $default, $to);
 
             $entries[$id]['total_revenue'] = $converted;
             $entries[$id]['revenue_currency'] = $default;
@@ -658,7 +687,7 @@ final class CommissionRuleEngine
 
         usort($entries, function (array $left, array $right): int {
             if ($left['total_revenue'] === null && $right['total_revenue'] === null) {
-                return 0;
+                return $left['affiliate_id'] <=> $right['affiliate_id'];
             }
 
             if ($left['total_revenue'] === null) {
@@ -669,7 +698,7 @@ final class CommissionRuleEngine
                 return -1;
             }
 
-            return $right['total_revenue'] <=> $left['total_revenue'];
+            return [$right['total_revenue'], $left['affiliate_id']] <=> [$left['total_revenue'], $right['affiliate_id']];
         });
 
         return collect(array_slice($entries, 0, $limit))
