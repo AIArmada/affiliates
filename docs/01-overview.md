@@ -107,18 +107,17 @@ src/
 ├── Exceptions/        # Custom exceptions
 ├── Facades/           # Laravel facades
 ├── Http/              # Controllers for API routes
+├── Jobs/              # Queued webhook dispatch
 ├── Listeners/         # Event listeners
-├── Models/            # Eloquent models (28 models; reusable concerns live in Models/Concerns)
-├── Services/          # Business logic services (24 services)
+├── Merchants/         # Network postback client and referral capture
+├── Models/            # Eloquent models (with reusable owner-scoping concerns)
+├── Resolvers/         # Affiliate lookup resolvers
+├── Rules/             # Fraud rules
+├── Services/          # Business logic services (including Commissions/, Payouts/, Tax/)
+├── Settings/          # Spatie settings groups
 ├── States/            # Spatie model states
 ├── Strategies/        # Attribution strategies
-├── Jobs/              # Queued jobs (webhooks)
-├── Merchant/          # Network merchant SDK (postbacks, referral capture)
-├── Notifications/     # Mail notifications
-├── Resolvers/         # Owner/subject resolvers
-├── Rules/             # Fraud detection rules
-├── Settings/          # Spatie settings classes
-└── Support/           # Helpers, middleware, webhooks
+└── Support/           # Helpers, middleware (Support/Middleware/), webhooks
 ```
 
 ## Multi-Tenancy

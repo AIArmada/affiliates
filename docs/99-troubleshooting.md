@@ -90,14 +90,16 @@ $affiliate?->isActive(); // Should be true
 1. **Affiliate has commission rate set:**
 ```php
 $affiliate->commission_rate; // Should be > 0
-$affiliate->commission_type; // 'percentage' or 'fixed'
+$affiliate->commission_type; // CommissionType::Percentage or CommissionType::Fixed ('percentage' | 'fixed')
 ```
 
 2. **Order total is provided:**
 ```php
+// The payload key is `total` (minor units). `value_minor` is the persisted
+// column name and is NOT read from the payload.
 RecordAffiliateConversion::run($cart, [
     'external_reference' => 'ORD-123',
-    'total' => 15000, // Required for percentage commissions
+    'total' => 15000,     // Required for percentage commissions
     'subtotal' => 14000,
 ]);
 ```
@@ -108,7 +110,7 @@ RecordAffiliateConversion::run($cart, [
 
 1. **Rate is in correct units:**
    - Percentage: basis points (1000 = 10%)
-   - Fixed: minor units (1500 = $15.00)
+   - Fixed: minor units (1500 = 15.00)
 
 2. **Volume tiers are configured correctly:**
 ```php

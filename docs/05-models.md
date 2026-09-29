@@ -4,7 +4,7 @@ title: Models Reference
 
 # Models Reference
 
-The affiliates package includes 28 Eloquent models. This reference covers the primary models and their relationships.
+The affiliates package includes 30 Eloquent models. This reference covers the primary models and their relationships.
 
 ## Core Models
 
@@ -23,7 +23,7 @@ use AIArmada\Affiliates\Models\Affiliate;
 | `id` | uuid | Primary key |
 | `code` | string | Unique affiliate code |
 | `name` | string | Affiliate name |
-| `status` | AffiliateStatus | Current status |
+| `status` | `AIArmada\Affiliates\States\AffiliateStatus` | Spatie model state: `draft`, `pending`, `active`, `paused`, `disabled` |
 | `registration_approval_mode` | string | Snapshotted approval mode (auto/open/admin), immutable |
 | `commission_type` | CommissionType | Percentage or fixed |
 | `commission_rate` | int | Rate in basis points or minor units |
@@ -40,7 +40,7 @@ use AIArmada\Affiliates\Models\Affiliate;
 ```php
 $affiliate->conversions;      // HasMany<AffiliateConversion>
 $affiliate->attributions;     // HasMany<AffiliateAttribution>
-$affiliate->payouts;          // HasMany<AffiliatePayout>
+$affiliate->payouts;          // MorphMany<AffiliatePayout>
 $affiliate->links;            // HasMany<AffiliateLink>
 $affiliate->balances;         // HasMany<AffiliateBalance>, one per currency
 $affiliate->parent;           // BelongsTo<Affiliate>
@@ -48,12 +48,16 @@ $affiliate->children;         // HasMany<Affiliate>
 $affiliate->programs;         // BelongsToMany<AffiliateProgram>
 $affiliate->fraudSignals;     // HasMany<AffiliateFraudSignal>
 $affiliate->dailyStats;       // HasMany<AffiliateDailyStat>
-$affiliate->balance;          // HasOne<AffiliateBalance>
-
-// Commission rules and volume tiers belong to programs, not affiliates:
-$program->commissionRules;    // HasMany<AffiliateCommissionRule>
-AffiliateVolumeTier::where('program_id', $program->id)->get();
+$affiliate->rank;             // BelongsTo<AffiliateRank>
+$affiliate->payoutMethods;    // HasMany<AffiliatePayoutMethod>
+$affiliate->payoutHolds;      // HasMany<AffiliatePayoutHold>
+$affiliate->vouchers;         // HasMany<Voucher>
+$affiliate->balances;         // HasMany<AffiliateBalance>, one row per currency
 ```
+
+`commissionRules` and `volumeTiers` are **not** relationships on `Affiliate` —
+those rows are program-scoped and reachable via `$program->commissionRules()` and
+`$program->volumeTiers()`.
 
 **Key Methods:**
 
@@ -136,7 +140,7 @@ use AIArmada\Affiliates\Models\AffiliateConversion;
 | `commission_minor` | int | Commission amount in minor units |
 | `commission_currency` | string | Required. Denominates both `value_minor` and `commission_minor`; no database default — writers must set it explicitly |
 | `held_minor` | int | Amount this conversion recorded in the balance holding pool (0 when off-record); approval releases from it and credits any uncovered remainder, then zeroes it |
-| `status` | ConversionStatus | Pending, Qualified, Approved, Rejected, Reversed, Paid |
+| `status` | ConversionStatus | pending, qualified, approved, rejected, reversed, paid |
 | `occurred_at` | timestamp | When conversion occurred |
 | `approved_at` | timestamp | When approved or matured into the payout-eligible state |
 
@@ -219,9 +223,9 @@ use AIArmada\Affiliates\Models\AffiliateProgram;
 |-----------|------|-------------|
 | `name` | string | Program name |
 | `slug` | string | URL-friendly slug |
-| `status` | ProgramStatus | Draft, Active, Paused, Archived |
+| `status` | ProgramStatus | draft, active, paused, archived |
 | `requires_approval` | bool | Manual approval required |
-| `visibility` | ProgramVisibility | Public or Private |
+| `visibility` | ProgramVisibility | public, private |
 | `default_commission_rate_basis_points` | int | Default commission |
 | `commission_type` | string | Percentage or fixed |
 | `cookie_lifetime_days` | int | Attribution window |
@@ -287,9 +291,9 @@ use AIArmada\Affiliates\Models\AffiliatePayoutMethod;
 
 | Attribute | Type | Description |
 |-----------|------|-------------|
-| `type` | PayoutMethodType | BankTransfer, PayPal, StripeConnect, Wise, Payoneer, Check, Wire, Crypto |
+| `type` | PayoutMethodType | bank_transfer, paypal, stripe_connect, wise, payoneer, check, wire, crypto |
 | `is_default` | bool | Primary method |
-| `verified_at` | timestamp | Verification timestamp (null until verified) |
+| `verified_at` | timestamp | When the method was verified by system |
 | `details` | array | Encrypted payout details |
 
 ### AffiliatePayoutHold
@@ -321,10 +325,13 @@ use AIArmada\Affiliates\Models\AffiliateFraudSignal;
 | Attribute | Type | Description |
 |-----------|------|-------------|
 | `affiliate_id` | uuid | The affiliate |
-| `rule_code` | string | Detecting rule code |
-| `severity` | FraudSeverity | Low, Medium, High, Critical |
-| `status` | FraudSignalStatus | Detected, Reviewed, Dismissed, Confirmed |
-| `risk_points` | int | Risk points contributed |
+| `conversion_id` | uuid | Related conversion |
+| `touchpoint_id` | uuid | Related touchpoint |
+| `rule_code` | string | Fraud rule that fired (`CLICK_VELOCITY`, `GEO_ANOMALY`, `FINGERPRINT_REPEAT`, `SELF_REFERRAL`, `CONVERSION_VELOCITY`, `FAST_CONVERSION`) |
+| `description` | string | Human-readable signal description |
+| `severity` | FraudSeverity | low, medium, high, critical |
+| `status` | FraudSignalStatus | detected, reviewed, dismissed, confirmed |
+| `risk_points` | int | Fraud risk points contributed (FraudSeverity::fromScore() bands at 50/80/100) |
 | `evidence` | array | Signal evidence |
 
 ### AffiliateDailyStat

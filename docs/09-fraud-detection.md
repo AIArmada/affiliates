@@ -50,65 +50,74 @@ use AIArmada\Affiliates\Services\FraudDetectionService;
 $service = app(FraudDetectionService::class);
 ```
 
+Both entrypoints return the same array shape:
+
+```php
+['allowed' => bool, 'score' => int, 'signals' => AffiliateFraudSignal[]]
+```
+
+`allowed` is `false` once the summed `risk_points` reach
+`affiliates.fraud.blocking_threshold`. Rules are registered under the
+`affiliates.fraud_rule` tag, so you can add your own.
+
 ### Analyzing Clicks
 
 ```php
-// Analyze a click for fraud signals; returns ['allowed', 'score', 'signals']
-$result = $service->analyzeClick($affiliate, $request);
+$result = $service->analyzeClick($affiliate, request());
 
 foreach ($result['signals'] as $signal) {
-    // Each signal is an AffiliateFraudSignal model
-    echo $signal->rule_code;   // e.g., 'velocity_exceeded'
-    echo $signal->severity;    // Low, Medium, High, Critical
-    echo $signal->risk_points; // points contributed
+    // Each signal is a persisted AffiliateFraudSignal model
+    echo $signal->rule_code;    // e.g. 'CLICK_VELOCITY'
+    echo $signal->severity;     // FraudSeverity enum
+    echo $signal->risk_points;  // points this rule contributed
 }
 ```
 
 ### Analyzing Conversions
 
 ```php
-// Check conversion for suspicious patterns (persists signals)
-$result = $service->analyzeConversion($affiliate, $conversion);
+// Check conversion for suspicious patterns
+$result = $service->analyzeConversion($conversion);
 ```
 
 ### Getting the Risk Profile
 
 ```php
-// Aggregated risk profile for affiliate
+// Rolling 30-day fraud profile for an affiliate
 $profile = $service->getRiskProfile($affiliate);
 // ['total_score', 'severity', 'signal_count', 'by_rule', 'pending_review', 'confirmed']
 
-if (($profile['severity'] ?? null) === FraudSeverity::Critical) {
+if ($profile['severity'] === FraudSeverity::Critical) {
     // Consider pausing or disabling this affiliate in your application workflow
 }
 ```
 
-Velocity, self-referral, and the other built-in checks run inside
-`analyzeClick()`/`analyzeConversion()`; individual rules live in `Rules/`.
+## Fraud Rules
 
-## Fraud Signal Types
+Six rules ship in `AIArmada\Affiliates\Rules`, identified by `rule_code`:
 
-| Type | Description |
-|------|-------------|
-| `velocity_exceeded` | Too many clicks/conversions in time window |
-| `ip_duplicate` | Same IP generating multiple attributions |
-| `fingerprint_duplicate` | Browser fingerprint seen too many times |
-| `geo_mismatch` | Geographic location doesn't match expected |
-| `fast_conversion` | Conversion happened suspiciously fast |
-| `self_referral` | Affiliate trying to credit themselves |
-| `bot_detected` | User agent indicates bot traffic |
-| `refund_pattern` | High refund rate on conversions |
+| `rule_code` | Rule | Risk points |
+|-------------|------|-------------|
+| `CLICK_VELOCITY` | `ClickVelocityRule` — too many clicks in the hour | 30 |
+| `CONVERSION_VELOCITY` | `ConversionVelocityRule` — too many conversions in the day | 35 |
+| `GEO_ANOMALY` | `GeoAnomalyRule` — geography looks anomalous | 40 |
+| `FAST_CONVERSION` | `FastConversionRule` — conversion too soon after attribution | 45 |
+| `FINGERPRINT_REPEAT` | `FingerprintRepeatRule` — fingerprint seen too many times | 25 |
+| `SELF_REFERRAL` | `SelfReferralRule` — affiliate crediting themselves | 100 |
 
 ## Fraud Severity Levels
 
 ```php
 use AIArmada\Affiliates\Enums\FraudSeverity;
 
-FraudSeverity::Low;       // Threshold: 20 - Minor concern
-FraudSeverity::Medium;    // Threshold: 50 - Investigate
-FraudSeverity::High;      // Threshold: 80 - Likely fraud
-FraudSeverity::Critical;  // Threshold: 100 - Immediate action needed
+FraudSeverity::Low;       // riskThreshold() 20 — minor concern
+FraudSeverity::Medium;    // riskThreshold() 50 — investigate
+FraudSeverity::High;      // riskThreshold() 80 — likely fraud
+FraudSeverity::Critical;  // riskThreshold() 100 — immediate action needed
 ```
+
+`FraudSeverity::fromScore($score)` bands a cumulative score: `>= 100` critical,
+`>= 80` high, `>= 50` medium, otherwise low.
 
 ## Fraud Signal Statuses
 
@@ -127,15 +136,23 @@ Confirmed as blocking.
 
 ## Recording Signals Manually
 
+There is no `FraudDetectionService::recordSignal()`. Persist the row directly —
+the `FraudSignalDetected` event is dispatched by the detection service, not by
+the model, so fire it yourself if listeners must run.
+
 ```php
 use AIArmada\Affiliates\Models\AffiliateFraudSignal;
+use AIArmada\Affiliates\Enums\FraudSeverity;
+use AIArmada\Affiliates\Enums\FraudSignalStatus;
 
 $signal = AffiliateFraudSignal::create([
     'affiliate_id' => $affiliate->id,
-    'rule_code' => 'suspicious_pattern',
-    'severity' => FraudSeverity::High,
-    'risk_points' => 50,
+    'rule_code' => 'CUSTOM_PATTERN',
     'description' => 'Unusual conversion pattern detected',
+    'severity' => FraudSeverity::High,
+    'status' => FraudSignalStatus::Detected,
+    'risk_points' => 50,
+    'detected_at' => now(),
     'evidence' => [
         'conversions_today' => 47,
         'average_daily' => 5,
@@ -159,10 +176,7 @@ Enable fingerprint-based duplicate detection:
 
 The system generates fingerprints from:
 - User agent
-- IP address
-- Accept-Language header
-- Screen resolution (if available)
-- Timezone
+- IP address (hashed via `AIArmada\Affiliates\Support\IpHasher`)
 
 ## IP Rate Limiting
 
@@ -188,7 +202,7 @@ When an affiliate's cumulative fraud score reaches the blocking threshold, autom
 ],
 ```
 
-Implement automatic suspension:
+Respond to individual detections:
 
 ```php
 use AIArmada\Affiliates\Events\FraudSignalDetected;
@@ -226,12 +240,16 @@ $signal->update([
 // Confirm fraud
 $signal->update([
     'status' => FraudSignalStatus::Confirmed,
-    'reviewed_at' => now(),
+    'confirmed_at' => now(),
 ]);
 
 // Optionally reject the linked conversion
 $signal->conversion?->update(['status' => RejectedConversion::class]);
 ```
+
+> **warning:**
+> `AffiliateFraudSignal` has no `notes` column. Free-text goes in `description`
+> (set at creation) or `evidence`; a `notes` key would be dropped silently.
 
 ## Self-Referral Protection
 

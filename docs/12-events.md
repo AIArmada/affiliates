@@ -10,13 +10,12 @@ The package dispatches events for key actions and supports webhook delivery to e
 
 ### AffiliateAttributed
 
-Dispatched when a cart or session is attributed to an affiliate.
+Dispatched when a cart or session is attributed to an affiliate. It carries
+spatie/laravel-data DTOs, not models.
 
 ```php
 use AIArmada\Affiliates\Data\AffiliateAttributionData;
 use AIArmada\Affiliates\Data\AffiliateData;
-use AIArmada\Affiliates\Events\AffiliateAttributed;
-
 class AffiliateAttributed
 {
     public function __construct(
@@ -46,16 +45,15 @@ class SendAttributionNotification
 
 ### AffiliateConversionRecorded
 
-Dispatched when a conversion is recorded.
+Dispatched when a conversion is recorded. It carries only the conversion DTO —
+there is no `$affiliate` property.
 
 ```php
 use AIArmada\Affiliates\Data\AffiliateConversionData;
-use AIArmada\Affiliates\Events\AffiliateConversionRecorded;
-
 class AffiliateConversionRecorded
 {
     public function __construct(
-        public readonly AffiliateConversionData $conversion,
+        public readonly AffiliateConversionData $conversion
     ) {}
 }
 ```
@@ -90,6 +88,8 @@ class SendConversionToAnalytics
 ```
 
 ### Other Events
+
+These are the full set of events in `AIArmada\Affiliates\Events`:
 
 ```php
 use AIArmada\Affiliates\Events\AffiliateActivated;
@@ -171,16 +171,10 @@ The package can dispatch webhooks to external endpoints for real-time integratio
 'webhooks' => [
     'signature_secret' => env('AFFILIATES_WEBHOOK_SIGNATURE_SECRET'),
     'endpoints' => [
-        'attribution' => [
-            'https://your-crm.com/webhooks/affiliate-attribution',
-        ],
-        'conversion' => [
-            'https://your-crm.com/webhooks/affiliate-conversion',
-            'https://slack-webhook.com/...',
-        ],
-        'payout' => [
-            'https://accounting-system.com/webhooks/payout',
-        ],
+        // Comma-separated string per event type, exploded into an array.
+        'attribution' => explode(',', (string) env('AFFILIATES_WEBHOOKS_ATTRIBUTION', '')),
+        'conversion' => explode(',', (string) env('AFFILIATES_WEBHOOKS_CONVERSION', '')),
+        'payout' => explode(',', (string) env('AFFILIATES_WEBHOOKS_PAYOUT', '')),
     ],
     'headers' => [
         'X-Affiliates-Signature' => env('AFFILIATES_WEBHOOKS_SIGNATURE'),
@@ -210,20 +204,27 @@ Every webhook shares one envelope; only `type` and `data` vary:
 
 ### Using WebhookDispatcher
 
+`WebhookDispatcher` has a single public method. Endpoints come from
+`affiliates.webhooks.endpoints.{type}`; there is no per-call endpoint argument
+and no `dispatchAttribution` / `dispatchConversion` / `dispatchPayout`
+shorthand.
+
 ```php
 use AIArmada\Affiliates\Support\Webhooks\WebhookDispatcher;
 
 $dispatcher = app(WebhookDispatcher::class);
 
-// Dispatch to the endpoints configured under webhooks.endpoints.conversion
-$dispatcher->dispatch('conversion', [
-    'external_reference' => 'ORD-12345',
-    'value_minor' => 15000,
-]);
-
-$dispatcher->dispatch('attribution', ['attribution_id' => $id]);
-$dispatcher->dispatch('payout', ['reference' => $reference]);
+// type must match a key under affiliates.webhooks.endpoints
+$dispatcher->dispatch('attribution', $payload);
+$dispatcher->dispatch('conversion', $payload);
+$dispatcher->dispatch('payout', $payload);
+$dispatcher->dispatch('custom-event', $payload);
 ```
+
+Dispatch is a no-op unless `affiliates.events.dispatch_webhooks` is `true` and
+`affiliates.webhooks.signature_secret` is a non-empty string. Each endpoint
+gets a durable `AffiliateWebhookDelivery` row and a queued
+`DispatchAffiliateWebhook` job.
 
 ### Webhook Signatures
 
@@ -265,8 +266,9 @@ class SendConversionToAnalytics implements ShouldQueue
         // Send to Google Analytics
         Analytics::trackEvent('affiliate_conversion', [
             'affiliate_code' => $conversion->affiliateCode,
-            'order_total' => $conversion->valueMinor / 100,
-            'commission' => $conversion->commissionMinor / 100,
+            'value_minor' => $conversion->valueMinor,
+            'commission_minor' => $conversion->commissionMinor,
+            'currency' => $conversion->commissionCurrency,
         ]);
     }
 }

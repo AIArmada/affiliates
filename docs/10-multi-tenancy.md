@@ -66,7 +66,7 @@ class Affiliate extends Model
 }
 ```
 
-### Owner-Scoped Models
+### Owner-Scoped Models (`HasOwner` + the shared `OwnerScope`)
 
 - `Affiliate`
 - `AffiliateAttribution`
@@ -79,13 +79,17 @@ class Affiliate extends Model
 - `AffiliateTouchpoint`
 - `AffiliateUpline`
 - `AffiliateCommissionTemplate`
+- `AffiliateDailyStat`
+- `AffiliateTouchpoint`
+- `AffiliateUpline`
 
-### Derived Models (Scope via Affiliate)
+### Derived Models (Relational Scope, No Owner Columns)
 
-Some models don't have direct owner columns but are scoped through their parent affiliate:
+These models have no `owner_*` columns; they are scoped through their parent:
 
 ```php
 use AIArmada\Affiliates\Models\Concerns\ScopesByAffiliateOwner;
+// or ScopesByProgramOwner, ScopesByTicketAffiliateOwner
 
 class AffiliateFraudSignal extends Model
 {
@@ -95,23 +99,28 @@ class AffiliateFraudSignal extends Model
 }
 ```
 
-Via affiliate (`ScopesByAffiliateOwner`):
-- `AffiliateBalance`
+Through `affiliate_id` (`ScopesByAffiliateOwner`):
+
 - `AffiliateFraudSignal`
-- `AffiliateLink`
-- `AffiliatePayoutHold`
+- `AffiliateBalance`
 - `AffiliatePayoutMethod`
+- `AffiliatePayoutHold`
+- `AffiliateLink`
 - `AffiliateProgramMembership`
 - `AffiliateRankHistory`
-- `AffiliateSupportTicket`
 - `AffiliateTaxDocument`
+- `AffiliateSupportTicket`
 
-Via program (`ScopesByProgramOwner`):
+Through `program_id` (`ScopesByProgramOwner`):
+
+- `AffiliateProgramTier`
+- `AffiliateProgramCreative`
 - `AffiliateCommissionPromotion`
 - `AffiliateCommissionRule`
 - `AffiliateProgramCreative`
 - `AffiliateProgramTier`
 - `AffiliateVolumeTier`
+- `AffiliateCommissionPromotion`
 
 Via ticket (`ScopesByTicketAffiliateOwner`):
 - `AffiliateSupportMessage`
@@ -184,7 +193,10 @@ $affiliate = Affiliate::create([
 
 ## Global Records
 
-Global records (`owner_id = null`) can be shared across all tenants:
+Global records are rows with `owner_type` / `owner_id` both null. They are
+global-*only*, not "visible to everyone": ordinary owner-scoped queries skip
+them entirely, and a tenant sees them only when it opts in with
+`includeGlobal: true` (or `affiliates.owner.include_global`, default `false`).
 
 ```php
 // Create global program available to all tenants
