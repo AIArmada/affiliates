@@ -44,79 +44,71 @@ Fraud detection operates at multiple levels:
 ## Using FraudDetectionService
 
 ```php
+use AIArmada\Affiliates\Enums\FraudSeverity;
 use AIArmada\Affiliates\Services\FraudDetectionService;
 
 $service = app(FraudDetectionService::class);
 ```
 
-Both entrypoints return the same array shape:
-
-```php
-['allowed' => bool, 'score' => int, 'signals' => AffiliateFraudSignal[]]
-```
-
-`allowed` is `false` once the summed `risk_points` reach
-`affiliates.fraud.blocking_threshold`. Rules are registered under the
-`affiliates.fraud_rule` tag, so you can add your own.
-
 ### Analyzing Clicks
 
 ```php
-$result = $service->analyzeClick($affiliate, request());
+// Analyze a click for fraud signals; returns ['allowed', 'score', 'signals']
+$result = $service->analyzeClick($affiliate, $request);
 
 foreach ($result['signals'] as $signal) {
-    // Each signal is a persisted AffiliateFraudSignal model
-    echo $signal->rule_code;    // e.g. 'CLICK_VELOCITY'
-    echo $signal->severity;     // FraudSeverity enum
-    echo $signal->risk_points;  // points this rule contributed
+    // Each signal is an AffiliateFraudSignal model
+    echo $signal->rule_code;   // e.g., 'velocity_exceeded'
+    echo $signal->severity;    // Low, Medium, High, Critical
+    echo $signal->risk_points; // points contributed
 }
 ```
 
 ### Analyzing Conversions
 
 ```php
-// Check conversion for suspicious patterns
-$result = $service->analyzeConversion($conversion);
+// Check conversion for suspicious patterns (persists signals)
+$result = $service->analyzeConversion($affiliate, $conversion);
 ```
 
 ### Getting the Risk Profile
 
 ```php
-// Rolling 30-day fraud profile for an affiliate
+// Aggregated risk profile for affiliate
 $profile = $service->getRiskProfile($affiliate);
 // ['total_score', 'severity', 'signal_count', 'by_rule', 'pending_review', 'confirmed']
 
-if ($profile['severity'] === FraudSeverity::Critical) {
+if (($profile['severity'] ?? null) === FraudSeverity::Critical) {
     // Consider pausing or disabling this affiliate in your application workflow
 }
 ```
 
-## Fraud Rules
+Velocity, self-referral, and the other built-in checks run inside
+`analyzeClick()`/`analyzeConversion()`; individual rules live in `Rules/`.
 
-Six rules ship in `AIArmada\Affiliates\Rules`, identified by `rule_code`:
+## Fraud Signal Types
 
-| `rule_code` | Rule | Risk points |
-|-------------|------|-------------|
-| `CLICK_VELOCITY` | `ClickVelocityRule` — too many clicks in the hour | 30 |
-| `CONVERSION_VELOCITY` | `ConversionVelocityRule` — too many conversions in the day | 35 |
-| `GEO_ANOMALY` | `GeoAnomalyRule` — geography looks anomalous | 40 |
-| `FAST_CONVERSION` | `FastConversionRule` — conversion too soon after attribution | 45 |
-| `FINGERPRINT_REPEAT` | `FingerprintRepeatRule` — fingerprint seen too many times | 25 |
-| `SELF_REFERRAL` | `SelfReferralRule` — affiliate crediting themselves | 100 |
+| Type | Description |
+|------|-------------|
+| `velocity_exceeded` | Too many clicks/conversions in time window |
+| `ip_duplicate` | Same IP generating multiple attributions |
+| `fingerprint_duplicate` | Browser fingerprint seen too many times |
+| `geo_mismatch` | Geographic location doesn't match expected |
+| `fast_conversion` | Conversion happened suspiciously fast |
+| `self_referral` | Affiliate trying to credit themselves |
+| `bot_detected` | User agent indicates bot traffic |
+| `refund_pattern` | High refund rate on conversions |
 
 ## Fraud Severity Levels
 
 ```php
 use AIArmada\Affiliates\Enums\FraudSeverity;
 
-FraudSeverity::Low;       // riskThreshold() 20 — minor concern
-FraudSeverity::Medium;    // riskThreshold() 50 — investigate
-FraudSeverity::High;      // riskThreshold() 80 — likely fraud
-FraudSeverity::Critical;  // riskThreshold() 100 — immediate action needed
+FraudSeverity::Low;       // Threshold: 20 - Minor concern
+FraudSeverity::Medium;    // Threshold: 50 - Investigate
+FraudSeverity::High;      // Threshold: 80 - Likely fraud
+FraudSeverity::Critical;  // Threshold: 100 - Immediate action needed
 ```
-
-`FraudSeverity::fromScore($score)` bands a cumulative score: `>= 100` critical,
-`>= 80` high, `>= 50` medium, otherwise low.
 
 ## Fraud Signal Statuses
 
@@ -129,25 +121,21 @@ FraudSignalStatus::Dismissed; // False positive
 FraudSignalStatus::Confirmed; // Fraud confirmed
 ```
 
-## Recording Signals Manually
+Reviewed and Dismissed both clear the signal: gates that count unresolved
+fraud (such as open-registration auto-approval) only treat Detected and
+Confirmed as blocking.
 
-There is no `FraudDetectionService::recordSignal()`. Persist the row directly —
-the `FraudSignalDetected` event is dispatched by the detection service, not by
-the model, so fire it yourself if listeners must run.
+## Recording Signals Manually
 
 ```php
 use AIArmada\Affiliates\Models\AffiliateFraudSignal;
-use AIArmada\Affiliates\Enums\FraudSeverity;
-use AIArmada\Affiliates\Enums\FraudSignalStatus;
 
 $signal = AffiliateFraudSignal::create([
     'affiliate_id' => $affiliate->id,
-    'rule_code' => 'CUSTOM_PATTERN',
-    'description' => 'Unusual conversion pattern detected',
+    'rule_code' => 'suspicious_pattern',
     'severity' => FraudSeverity::High,
-    'status' => FraudSignalStatus::Detected,
     'risk_points' => 50,
-    'detected_at' => now(),
+    'description' => 'Unusual conversion pattern detected',
     'evidence' => [
         'conversions_today' => 47,
         'average_daily' => 5,
@@ -171,7 +159,10 @@ Enable fingerprint-based duplicate detection:
 
 The system generates fingerprints from:
 - User agent
-- IP address (hashed via `AIArmada\Affiliates\Support\IpHasher`)
+- IP address
+- Accept-Language header
+- Screen resolution (if available)
+- Timezone
 
 ## IP Rate Limiting
 
@@ -197,7 +188,7 @@ When an affiliate's cumulative fraud score reaches the blocking threshold, autom
 ],
 ```
 
-Respond to individual detections:
+Implement automatic suspension:
 
 ```php
 use AIArmada\Affiliates\Events\FraudSignalDetected;
@@ -211,10 +202,7 @@ protected $listen = [
 ];
 ```
 
-> **warning:**
-> There is no `FraudThresholdReached` event. `FraudDetectionService` dispatches
-> `FraudSignalDetected` per signal; the threshold is a boolean on the returned
-> `['allowed' => false]`, not an event.
+The event carries the `AffiliateFraudSignal` (reach the affiliate and severity through it). It fires from the model on every create — detection rules, manual analyst flags, and host integrations — and implements `ShouldDispatchAfterCommit`, so listeners run after the signal transaction commits.
 
 ## Fraud Review in Filament
 
@@ -232,21 +220,18 @@ $signal->update([
     'status' => FraudSignalStatus::Reviewed,
     'reviewed_at' => now(),
     'reviewed_by' => auth()->id(),
+    'description' => 'Investigated - appears legitimate',
 ]);
 
 // Confirm fraud
 $signal->update([
     'status' => FraudSignalStatus::Confirmed,
-    'confirmed_at' => now(),
+    'reviewed_at' => now(),
 ]);
 
 // Optionally reject the linked conversion
 $signal->conversion?->update(['status' => RejectedConversion::class]);
 ```
-
-> **warning:**
-> `AffiliateFraudSignal` has no `notes` column. Free-text goes in `description`
-> (set at creation) or `evidence`; a `notes` key would be dropped silently.
 
 ## Self-Referral Protection
 

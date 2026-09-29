@@ -30,11 +30,6 @@ $payout = CreatePayout::run($conversionIds, [
 ]);
 ```
 
-`CreatePayout` reads only `reference`, `status`, `currency`, `metadata`,
-`payee_type`, `payee_id`, `scheduled_at`, `paid_at`, `owner_type`, and
-`owner_id` from `$attributes`. There is no `method` or `notes` key — both are
-silently ignored. The payout method is chosen later at processing time.
-
 ### One Currency Per Payout
 
 Every payout reserves exactly one per-currency balance, so all conversions in a payout must share one `commission_currency`. Mixed-currency sets throw an `InvalidArgumentException` instead of summing silently — schedule one payout per currency. A `currency` attribute that disagrees with the conversions also throws.
@@ -65,11 +60,11 @@ UpdatePayoutStatus::run($payout, 'completed', 'Processed successfully');
 
 ```php
 use AIArmada\Affiliates\Models\AffiliatePayout;
-use AIArmada\Affiliates\Enums\PayoutStatus;
+use AIArmada\Affiliates\States\PendingPayout;
 
 $payout = AffiliatePayout::create([
     'reference' => 'PO-' . now()->format('Ymd') . '-' . str_pad($sequence, 4, '0', STR_PAD_LEFT),
-    'status' => PayoutStatus::Pending,
+    'status' => PendingPayout::class,
     'total_minor' => $totalAmount,
     'currency' => $affiliate->currency,
     'payee_type' => $affiliate->getMorphClass(),
@@ -81,22 +76,27 @@ $payout = AffiliatePayout::create([
 $conversions->each(fn ($c) => $c->update(['affiliate_payout_id' => $payout->id]));
 ```
 
-> **warning**
-> Manual linking bypasses the one-currency-per-payout guard in `CreatePayout`. Only attach conversions whose `commission_currency` matches the payout `currency`, and prefer the action so balance reservation stays consistent.
+> **Warning:** manual linking bypasses the one-currency-per-payout guard in `CreatePayout`. Only attach conversions whose `commission_currency` matches the payout `currency`, and prefer the action so balance reservation stays consistent.
 
 ## Payout Statuses
 
-```php
-use AIArmada\Affiliates\Enums\PayoutStatus;
+Payout status is a Spatie state (`States\PayoutStatus`); assign state classes on write:
 
-PayoutStatus::Pending;     // Awaiting processing
-PayoutStatus::Processing;  // Currently being processed
-PayoutStatus::Completed;   // Successfully paid
-PayoutStatus::Failed;      // Payment failed
-PayoutStatus::Cancelled;   // Cancelled by admin
+```php
+use AIArmada\Affiliates\States\CancelledPayout;
+use AIArmada\Affiliates\States\CompletedPayout;
+use AIArmada\Affiliates\States\FailedPayout;
+use AIArmada\Affiliates\States\PendingPayout;
+use AIArmada\Affiliates\States\ProcessingPayout;
+
+PendingPayout::class;     // Awaiting processing
+ProcessingPayout::class;  // Currently being processed
+CompletedPayout::class;   // Successfully paid
+FailedPayout::class;      // Payment failed
+CancelledPayout::class;   // Cancelled by admin
 ```
 
-`scheduled_at` is still available on the model and used by the scheduled-payout command, but there is no separate `Scheduled` enum state.
+`scheduled_at` is still available on the model and used by the scheduled-payout command, but there is no separate `Scheduled` state. The `Enums\PayoutStatus` enum mirrors these cases for reads and interop.
 
 ## Payout Methods
 
@@ -140,28 +140,20 @@ AffiliatePayoutMethod::create([
 ]);
 ```
 
-> **warning:**
-> `is_verified` is not a column. Verification is the `verified_at` timestamp;
-> `create()` would drop an `is_verified` key silently.
-
 ### Available Method Types
 
 ```php
 use AIArmada\Affiliates\Enums\PayoutMethodType;
 
-PayoutMethodType::BankTransfer;  // 'bank_transfer'
-PayoutMethodType::PayPal;        // 'paypal'
-PayoutMethodType::StripeConnect; // 'stripe_connect'
-PayoutMethodType::Wise;          // 'wise'
-PayoutMethodType::Payoneer;      // 'payoneer'
-PayoutMethodType::Check;         // 'check'
-PayoutMethodType::Wire;          // 'wire'
-PayoutMethodType::Crypto;        // 'crypto'
+PayoutMethodType::BankTransfer;
+PayoutMethodType::PayPal;
+PayoutMethodType::StripeConnect;
+PayoutMethodType::Wise;
+PayoutMethodType::Payoneer;
+PayoutMethodType::Check;
+PayoutMethodType::Wire;
+PayoutMethodType::Crypto;
 ```
-
-There is no `Stripe` or `Manual` case. Manual payouts go through
-`Services\Payouts\ManualPayoutProcessor`, which is selected by type string, not
-by an enum case.
 
 ## Payout Holds
 
@@ -174,9 +166,8 @@ use AIArmada\Affiliates\Models\AffiliatePayoutHold;
 $hold = AffiliatePayoutHold::create([
     'affiliate_id' => $affiliate->id,
     'reason' => 'Fraud investigation pending',
-    'notes' => 'Ticket FR-42',
-    'expires_at' => now()->addDays(30),
-    'placed_by' => 'admin-1',
+    'notes' => '$500 under review',
+    'placed_by' => $admin->id,
 ]);
 
 // Release hold
@@ -191,11 +182,6 @@ $hasHolds = $affiliate->payoutHolds()
     ->exists();
 ```
 
-> **warning:**
-> A hold is a gate, not an amount. `amount_minor` and `held_at` are not
-> columns and would be silently dropped. Use `expires_at` for the hold
-> deadline and `notes` for the release note.
-
 ## Maturity Period
 
 Conversions must mature before payout eligibility:
@@ -209,8 +195,8 @@ use AIArmada\Affiliates\Actions\Conversions\MatureConversion;
 // Promote all qualified conversions that have reached maturity
 $results = ProcessConversionMaturity::run();
 
-// Mature a specific conversion
-$conversion = MatureConversion::run($conversion);
+// Mature a specific conversion (returns bool)
+$matured = MatureConversion::run($conversion);
 ```
 
 Configure in `config/affiliates.php`:
@@ -280,33 +266,39 @@ The current maturity flow uses `holding_minor` for pre-payout commission state. 
 ### Processing with PayoutProcessorFactory
 
 ```php
-use AIArmada\Affiliates\Services\Payouts\PayoutProcessorFactory;
+use AIArmada\Affiliates\Actions\Payouts\UpdatePayoutStatus;
 use AIArmada\Affiliates\Enums\PayoutMethodType;
+use AIArmada\Affiliates\Services\Payouts\PayoutProcessorFactory;
 
 $factory = app(PayoutProcessorFactory::class);
 
-// Get a processor by method type (or its string value)
-$processor = $factory->make($method->type);
-$processor = $factory->make('stripe_connect');
+// Get processor for a payout method type
+$processor = $factory->make(PayoutMethodType::PayPal);
 
 // Process payout
 $result = $processor->process($payout);
 
 if ($result->isSuccess()) {
-    $payout->update([
-        'status' => PayoutStatus::Completed,
-        'paid_at' => now(),
-        'metadata' => array_merge($payout->metadata ?? [], [
-            'transaction_id' => $result->getStatus(),
-        ]),
+    $payout = UpdatePayoutStatus::run($payout, 'completed', 'Provider outcome: completed', [
+        'provider' => $result->metadata['provider'] ?? null,
+        'provider_status' => $result->getStatus(),
     ]);
+
+    // The 4th argument lands ONLY on the payout event. Persist the
+    // provider reference on the payout itself, like the real
+    // ProcessAffiliatePayout path does.
+    $payout->forceFill([
+        'external_reference' => $result->externalReference,
+        'metadata' => array_merge($payout->metadata ?? [], [
+            'provider' => $result->metadata['provider'] ?? null,
+            'provider_status' => $result->getStatus(),
+        ]),
+    ])->save();
 }
 ```
 
-`AffiliatePayout` has no `method` column — resolve the method from the
-affiliate's `payoutMethods` relation. `PayoutResult` exposes
-`isSuccess()` / `isPending()` / `isUnknown()` and `getStatus()`; there is no
-`isSuccessful()` or `getTransactionId()`.
+> [!WARNING]
+> Never complete a payout with a direct status write (`$payout->update(['status' => ...])`): it bypasses the completion eligibility gate, the Approved-only conversion sync, the payout event, and the operation sync — leaving conversions linked-but-approved against a payout that reported the money as sent. Always complete through `UpdatePayoutStatus::run($payout, 'completed', ...)` (or `ProcessAffiliatePayout::handle($payout)` for the full claim/processor flow).
 
 ## Payout Events
 
@@ -321,19 +313,15 @@ $events = $payout->events()->orderBy('created_at')->get();
 // Manual event recording
 AffiliatePayoutEvent::create([
     'affiliate_payout_id' => $payout->id,
-    'from_status' => PayoutStatus::Pending,
-    'to_status' => PayoutStatus::Processing,
-    'notes' => 'Sent to provider',
+    'from_status' => 'pending',
+    'to_status' => 'processing',
+    'notes' => 'Processing started',
     'metadata' => [
         'processor' => 'paypal',
         'batch_id' => 'BATCH-123',
     ],
 ]);
 ```
-
-> **warning:**
-> There is no `event_type` column; the transition is recorded as
-> `from_status` / `to_status`. An `event_type` key would be dropped silently.
 
 ## Reconciliation
 
@@ -391,12 +379,8 @@ php artisan affiliates:process-maturity
 ### Export Payout Data
 
 ```bash
-php artisan affiliates:payout:export PAY-REF-1234
-php artisan affiliates:payout:export 2d8ce0f4-... --path=/path/to/payout.csv
+php artisan affiliates:payout:export PAY-REF-1234 --path=/path/to/payout.csv
 ```
-
-Exports a single payout (reference or ID) with its linked conversions. There is
-no `affiliates:export-payouts` command and no `--from`/`--to` date range.
 
 ## Multi-Level Payouts
 

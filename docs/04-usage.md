@@ -91,29 +91,18 @@ Set the consent cookie when user accepts:
 Cookie::queue('affiliate_consent', '1', 60 * 24 * 365);
 ```
 
-## Public Referral Entry Routes
+## Public Referral Entry Capture
 
-When `affiliates.public_pages.enabled` and `affiliates.public_pages.route.enabled` are both `true`, the package registers a public referral entry route.
-
-Default behavior:
-
-- route path: `r/{affiliateCode}`
-- route name: `affiliate.referral.entry`
-- controller: `PublicAffiliateReferralController`
-- action: `CapturePublicAffiliateReferral`
+When `affiliates.public_pages.enabled` and `affiliates.public_pages.auto_register_middleware` are both `true`, the package prepends the `CaptureAffiliateReferralFromPath` middleware (alias `affiliates.referral_path`) globally. No entry route is registered; instead, any URL ending in `/r/{affiliateCode}` is captured:
 
 Examples:
 
-```php
-route('affiliate.referral.entry', ['affiliateCode' => 'PARTNER42']);
-
-route('affiliate.referral.entry', [
-    'affiliateCode' => 'PARTNER42',
-    'to' => 'checkout',
-]);
+```text
+https://shop.test/r/PARTNER42
+https://shop.test/offers/spring/r/PARTNER42?sort=new
 ```
 
-The entry action resolves the affiliate, records the visit context, persists the affiliate cookie/session metadata, and then redirects to one of the configured public destinations. By default the package recognizes `home` and `checkout`, but you can add your own destination keys under `affiliates.public_pages.route.destinations`.
+The middleware resolves the affiliate (active only), records the visit via `TrackAffiliateVisit`, persists the affiliate cookie, and redirects back to the prefix path with the incoming query string preserved. The `home` and `checkout` destinations under `affiliates.public_pages.route.destinations` feed the `entry_url`/`checkout_url` links in the public-page referral payload below.
 
 ## Public Page Referral Context
 
@@ -144,10 +133,10 @@ The package ships a ready-made banner view at `affiliates::components.public-ref
 ### From Cart
 
 ```php
-use AIArmada\Cart\Facades\Cart;
+use AIArmada\Affiliates\Actions\Conversions\RecordAffiliateConversion;
 
 // Record conversion when order is placed
-Cart::recordAffiliateConversion([
+RecordAffiliateConversion::run($cart, [
     'external_reference' => $order->reference,
     'subtotal' => $order->subtotal_minor,
     'total' => $order->total_minor,
@@ -181,8 +170,8 @@ $conversion = RecordAffiliateConversion::run(
     cart: $cart,
     payload: [
         'external_reference' => 'ORD-12345',
-        'total' => 15000,          // minor units
-        'subtotal' => 14000,       // minor units
+        'total' => 15000,
+        'subtotal' => 14000,
         'conversion_type' => 'purchase',
         'subject_type' => 'product',
         'subject_key' => 'SKU-1001',
@@ -196,13 +185,9 @@ $conversion = RecordAffiliateConversion::run(
 );
 ```
 
-The payload keys are `total` and `subtotal` (minor units) — `value_minor` and `subtotal_minor`
-are **not** read and would be silently ignored. The persisted row uses `value_minor`,
-`subtotal_minor`, and `external_reference`.
-
 ## Conversion Rates and Reporting Currency
 
-Every conversion stamps the exchange rate effective at `occurred_at` (`commission_rate_to_base` + `commission_rate_base`), so historical reports never shift when current rates move. Read the stamped base-currency value from the `AffiliateConversion` **model** (not the returned `AffiliateConversionData` DTO) with `baseCommissionMinor()`, or convert explicitly with an as-of date:
+Every conversion stamps the exchange rate effective at `occurred_at` (`commission_rate_to_base` + `commission_rate_base`), so historical reports never shift when current rates move. `run()` returns an `AffiliateConversionData` DTO; use `baseCommissionMinor()` on the `AffiliateConversion` model for the stamped base-currency value, or convert explicitly with an as-of date:
 
 ```php
 use AIArmada\CommerceSupport\Support\CurrencyConverter;
@@ -216,7 +201,9 @@ Mixed-currency summaries return per-currency legs plus one converted total carry
 ## Creating Subject-Aware Tracking Links
 
 ```php
-$link = $service->createTrackingLink($affiliate, 'https://example.com/products/sku-1001', [
+use AIArmada\Affiliates\Actions\Affiliates\CreateTrackingLink;
+
+$link = CreateTrackingLink::run($affiliate, 'https://example.com/products/sku-1001', [
     'params' => ['utm_source' => 'affiliate-campaign'],
     'ttl_seconds' => 3600,
     'subject_type' => 'product',
@@ -238,9 +225,11 @@ ConversionStatus::Pending;    // Awaiting review
 ConversionStatus::Qualified;  // Qualified and waiting for maturity processing
 ConversionStatus::Approved;   // Approved and released toward payout eligibility
 ConversionStatus::Rejected;   // Rejected (fraud, refund, etc.)
-ConversionStatus::Reversed;   // Reversed after payout
+ConversionStatus::Reversed;   // Reversed after the fact (companion leg posted)
 ConversionStatus::Paid;       // Commission paid out
 ```
+
+Storage uses the matching Spatie states (`PendingConversion`, `QualifiedConversion`, `ApprovedConversion`, `RejectedConversion`, `ReversedConversion`, `PaidConversion`); assign state classes on write and use the enum for reads and interop.
 
 Use `total` and `subtotal` as the conversion amount inputs. The persisted conversion uses
 `value_minor` and `external_reference`; cart identity is resolved from the active attribution.
@@ -249,24 +238,18 @@ When the maturity workflow is enabled, conversions typically move from `Pending`
 
 ## Commission Calculation
 
-The `CommissionCalculator` service handles all commission logic. It takes the subtotal in minor
-units and returns the commission in minor units:
+The `CommissionCalculator` service handles all commission logic:
 
 ```php
-use AIArmada\Affiliates\Enums\CommissionType;
 use AIArmada\Affiliates\Services\CommissionCalculator;
 
 $calculator = app(CommissionCalculator::class);
 
-$affiliate->commission_type = CommissionType::Percentage;
-$affiliate->commission_rate = 1000; // 10% (basis points)
+// Calculate commission for an order subtotal
+$commission = $calculator->calculate($affiliate, 14000);
 
-$commission = $calculator->calculate($affiliate, 14000); // 1400 = 14.00
+// Returns commission in minor units (for example, 1400 = 14.00 in the affiliate currency)
 ```
-
-Percentage math uses `affiliates.currency.percentage_scale` (default `100`, so 1000 basis points
-= 10%). Fixed commissions ignore the amount entirely and return `commission_rate` as minor units.
-Both paths run through `CommissionCaps::clamp()`.
 
 ### Commission Types
 
@@ -411,12 +394,3 @@ use AIArmada\Affiliates\Facades\Affiliate;
 
 $affiliate = Affiliate::findByCode('PARTNER42');
 ```
-
-## Artisan Commands
-
-Scheduled work (daily stat aggregation, commission maturity, rank upgrades, performance bonuses,
-scheduled payouts, payout CSV export) is covered in [Artisan Commands](11-commands.md). The six
-commands are `affiliates:aggregate-daily`, `affiliates:process-maturity`,
-`affiliates:process-ranks`, `affiliates:award-bonuses`, `affiliates:process-payouts`, and
-`affiliates:payout:export`. With `affiliates.owner.enabled` on, each command iterates owner
-contexts automatically.

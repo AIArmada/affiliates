@@ -24,7 +24,7 @@ See `ProgramCatalogService::snapshot()` for the implementation.
   folded in), plus `variable_extras` (volume tiers, promotions) listed
   separately and never folded into the flat rate.
 
-> **warning**
+> [!WARNING]
 > The catalog routes live inside the existing API auth group (bearer token
 > + `NeedsOwner` when `affiliates.owner.enabled`). Remote pulls therefore
 > assume the merchant site runs with owner scoping **disabled** (the normal
@@ -42,10 +42,9 @@ See `ProgramCatalogService::snapshot()` for the implementation.
 
 ## Contribute promotables
 
-Register a `PromotableProviderInterface` with `PromotableRegistry`. There is no
-container tag for this — the registry is the only registration path. Without a
-provider, subjects fall back to active product/category rule `in` lists with
-`/` placeholder URLs.
+Register a `PromotableProviderInterface` on the `PromotableRegistry`.
+Without one, subjects fall back to active product/category rule `in` lists
+with `/` placeholder URLs.
 
 ```php
 use AIArmada\Affiliates\Contracts\PromotableProviderInterface;
@@ -67,6 +66,6 @@ class ProductPromotables implements PromotableProviderInterface
 app(PromotableRegistry::class)->register(new ProductPromotables);
 ```
 
-> **warning**
+> [!WARNING]
 > Snapshot uses `getApplicableRules()` + base math only. It never calls
 > `CommissionRuleEngine::calculate()`, which would increment promotion usage.
